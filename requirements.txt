@@ -3,4 +3,3 @@ yfinance
 pandas
 google-genai
 python-dotenv
-os

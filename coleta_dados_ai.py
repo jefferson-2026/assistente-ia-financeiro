@@ -10,7 +10,7 @@ import os
 # CONFIGURAÇÃO GERAL
 # ==========================================
 load_dotenv()
-MINHA_CHAVE_API = os.getenv("PRIVATE_KEY_GOOGLE_AI")
+MINHA_CHAVE_API = os.getenv(PRIVATE_KEY_GOOGLE_AI)
 client = genai.Client(api_key=MINHA_CHAVE_API)
 
 # Configura o visual da página no navegador

@@ -2,11 +2,15 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from google import genai
+from dotenv import load_dotenv
+import os
+
 
 # ==========================================
 # CONFIGURAÇÃO GERAL
 # ==========================================
-MINHA_CHAVE_API = "AIzaSyD2taQ6Aox7q-LL0srL1QxwuyMk-xZ5xSU"
+load_dotenv()
+MINHA_CHAVE_API = os.getenv("PRIVATE_KEY_GOOGLE_AI")
 client = genai.Client(api_key=MINHA_CHAVE_API)
 
 # Configura o visual da página no navegador

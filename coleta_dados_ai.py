@@ -4,6 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google import genai
+from fpdf import FPDF
+import tempfile
+import os
 
 # ==========================================
 # CONFIGURAÇÃO GERAL
@@ -13,11 +16,10 @@ MINHA_CHAVE_API = st.secrets["GEMINI_API_KEY"]
 client = genai.Client(api_key=MINHA_CHAVE_API)
 
 # ==========================================
-# FUNÇÕES DE BACKEND (PROCESSAMENTO)
+# FUNÇÕES DE BACKEND E PDF
 # ==========================================
 @st.cache_data(ttl=3600)
 def coletar_dados_historicos(ticker):
-    # TRUQUE SÊNIOR: Buscamos 5 anos escondido para calcular tudo perfeitamente
     dados = yf.download(ticker, period="5y", progress=False)
     
     if isinstance(dados.columns, pd.MultiIndex):
@@ -35,9 +37,8 @@ def coletar_dados_historicos(ticker):
     
     dados = dados.rename(columns={col_close: 'Close', col_high: 'High', col_low: 'Low', col_open: 'Open', col_vol: 'Volume'})
     
-    # --- CÁLCULO DE INDICADORES (Com Histórico Completo) ---
     dados['SMA_20'] = dados['Close'].rolling(window=20).mean()
-    dados['SMA_200'] = dados['Close'].rolling(window=200).mean() # Nova: Tendência Macro
+    dados['SMA_200'] = dados['Close'].rolling(window=200).mean() 
     
     dados['Std_Dev'] = dados['Close'].rolling(window=20).std()
     dados['Bollinger_Upper'] = dados['SMA_20'] + (dados['Std_Dev'] * 2)
@@ -58,32 +59,68 @@ def coletar_dados_historicos(ticker):
     return dados.dropna()
 
 def gerar_grafico_profissional(dados, nome_ativo):
-    # Gráfico agora tem 3 painéis (Preço, Volume, MACD)
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
-                        vertical_spacing=0.03, row_heights=[0.6, 0.15, 0.25])
-
-    # Painel 1: Preço e Médias
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.15, 0.25])
+    
     fig.add_trace(go.Candlestick(x=dados.index, open=dados['Open'], high=dados['High'], low=dados['Low'], close=dados['Close'], name="Preço"), row=1, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados['Bollinger_Upper'], line=dict(color='gray', width=1, dash='dash'), name='Banda Sup.'), row=1, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados['Bollinger_Lower'], line=dict(color='gray', width=1, dash='dash'), name='Banda Inf.', fill='tonexty', fillcolor='rgba(128,128,128,0.1)'), row=1, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados['SMA_20'], line=dict(color='blue', width=1.5), name='Média 20d'), row=1, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados['SMA_200'], line=dict(color='purple', width=2), name='Média 200d'), row=1, col=1)
 
-    # Painel 2: Volume
     cores_vol = ['green' if row['Close'] >= row['Open'] else 'red' for index, row in dados.iterrows()]
     fig.add_trace(go.Bar(x=dados.index, y=dados['Volume'], marker_color=cores_vol, name='Volume'), row=2, col=1)
 
-    # Painel 3: MACD
     cores_macd = ['green' if val >= 0 else 'red' for val in dados['MACD_Hist']]
     fig.add_trace(go.Bar(x=dados.index, y=dados['MACD_Hist'], marker_color=cores_macd, name='MACD Hist'), row=3, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados['MACD_Line'], line=dict(color='orange', width=1.5), name='MACD Line'), row=3, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados['MACD_Signal'], line=dict(color='cyan', width=1.5), name='Signal Line'), row=3, col=1)
 
-    fig.update_layout(title=f'Análise Técnica Institucional - {nome_ativo}', template='plotly_dark', xaxis_rangeslider_visible=False, height=850)
+    fig.update_layout(title=f'Análise Técnica Institucional - {nome_ativo}', template='plotly_dark', xaxis_rangeslider_visible=False, height=800)
     return fig
 
+def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, sma200, texto_ia, fig_original):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Cabeçalho do PDF
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, f"Relatorio de Analise Oficial: {ticker}", 0, 1, 'C')
+    pdf.ln(5)
+    
+    # Adicionando Métricas no PDF
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 10, f"Preco Atual: US$ {fechamento:.2f}  |  MME 200 Dias: US$ {sma200:.2f}", 0, 1)
+    pdf.cell(0, 10, f"RSI 14 Dias: {rsi:.2f}  |  MACD Line: {macd:.2f}", 0, 1)
+    pdf.ln(5)
+    
+    # Gerando Imagem do Gráfico (Fundo branco para impressão limpa)
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            fig_pdf = go.Figure(fig_original)
+            fig_pdf.update_layout(template='plotly_white', height=550) 
+            fig_pdf.write_image(tmp.name, engine="kaleido")
+            pdf.image(tmp.name, x=10, w=190)
+            os.unlink(tmp.name) # Apaga a imagem temporária
+    except Exception as e:
+        pdf.cell(0, 10, f"(Aviso: Nao foi possivel gerar a imagem do grafico. Detalhe: {e})", 0, 1)
+        
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, "Veredito do Algoritmo IA (Fundo Hedge)", 0, 1)
+    pdf.ln(5)
+    
+    # Formatando o texto da IA para compatibilidade com o PDF (Removendo Markdown)
+    pdf.set_font("Arial", '', 12)
+    texto_limpo = texto_ia.replace("**", "").replace("*", "").replace("#", "")
+    texto_limpo = texto_limpo.encode('ascii', 'ignore').decode('ascii') # Remove Emojis
+    
+    for linha in texto_limpo.split('\n'):
+        pdf.multi_cell(0, 7, linha)
+        
+    return pdf.output(dest='S').encode('latin-1')
+
 # ==========================================
-# INTERFACE DO USUÁRIO (FRONTEND)
+# INTERFACE DO USUÁRIO (FRONTEND TELA CHEIA)
 # ==========================================
 st.title("⚡ Terminal Institucional Crypto & IA")
 
@@ -93,29 +130,23 @@ col_input1, col_input2, col_input3, col_input4 = st.columns([2, 2, 2, 2])
 with col_input1:
     ativo_escolhido = st.text_input("Ticker do Ativo", value="BTC-USD")
 with col_input2:
-    # Removemos 1d e 5d pois velas diárias ficam estranhas para períodos tão curtos
     opcoes_periodo = {"1 Mês": 30, "3 Meses": 90, "6 Meses": 180, "1 Ano": 365, "2 Anos": 730, "5 Anos": 1825, "Máximo": 99999}
     selecao_texto = st.selectbox("Período de Visualização", list(opcoes_periodo.keys()), index=2)
     dias_plot = opcoes_periodo[selecao_texto]
 with col_input3:
-    st.write("") # Alinhamento
-    # CHAVE DE ATIVAÇÃO DA IA
-    usar_ia = st.toggle("🤖 Usar IA Especialista", value=True, help="Ative para gerar o relatório usando tokens.")
+    st.write("") 
+    usar_ia = st.toggle("🤖 Usar IA Especialista", value=True)
 with col_input4:
     st.write("") 
-    btn_analisar = st.button("Executar Análise", type="primary", use_container_width=True)
+    btn_analisar = st.button("Executar Análise Completa", type="primary", use_container_width=True)
 st.markdown("---")
 
 if btn_analisar:
-    with st.spinner(f"Processando histórico de dados para {ativo_escolhido}..."):
+    with st.spinner(f"Processando algoritmo institucional para {ativo_escolhido}..."):
         try:
-            # 1. Puxa todos os dados e calcula tudo
             dados_completos = coletar_dados_historicos(ativo_escolhido)
-            
-            # 2. Corta (slice) apenas a quantidade de dias que o usuário quer ver
             dados_plot = dados_completos.tail(dias_plot)
             
-            # 3. Pega os valores da última linha (dados mais recentes de hoje)
             fechamento_atual = dados_plot['Close'].iloc[-1]
             rsi_atual = dados_plot['RSI_14'].iloc[-1]
             macd_atual = dados_plot['MACD_Line'].iloc[-1]
@@ -124,49 +155,72 @@ if btn_analisar:
             bollinger_down = dados_plot['Bollinger_Lower'].iloc[-1]
             sma_20 = dados_plot['SMA_20'].iloc[-1]
             sma_200 = dados_plot['SMA_200'].iloc[-1]
-            volume_atual = dados_plot['Volume'].iloc[-1]
             
-            # Ajuste de layout dinâmico (Se a IA estiver desligada, o gráfico ocupa 100%)
-            col_grafico, col_ia = st.columns([2.5, 1.2]) if usar_ia else st.columns([1, 0.01])
+            # 1. MÉTRICAS EM TELA CHEIA
+            st.markdown("### 📊 Indicadores Quantitativos Atuais")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Preço Atual", f"US$ {fechamento_atual:.2f}")
+            m2.metric("RSI (14d)", f"{rsi_atual:.2f}", "Alerta: Sobrecompra" if rsi_atual > 70 else "Alerta: Sobrevenda" if rsi_atual < 30 else "Neutro", delta_color="off")
+            m3.metric("MACD Status", "Alta (Bullish)" if macd_atual > macd_signal else "Baixa (Bearish)", delta_color="normal" if macd_atual > macd_signal else "inverse")
+            m4.metric("SMA 200 (Macro)", f"US$ {sma_200:.2f}")
             
-            with col_grafico:
-                # Métricas Rápidas
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Preço Atual", f"US$ {fechamento_atual:.2f}")
-                m2.metric("RSI (14d)", f"{rsi_atual:.2f}", "Alerta: Sobrecompra" if rsi_atual > 70 else "Alerta: Sobrevenda" if rsi_atual < 30 else "Neutro", delta_color="off")
-                m3.metric("MACD", "Alta" if macd_atual > macd_signal else "Baixa", delta_color="normal" if macd_atual > macd_signal else "inverse")
-                m4.metric("SMA 200 (Macro)", f"US$ {sma_200:.2f}")
-                
-                st.plotly_chart(gerar_grafico_profissional(dados_plot, ativo_escolhido), use_container_width=True)
-                
+            # 2. GRÁFICO EM TELA CHEIA
+            st.markdown("### 📈 Gráfico de Preços, Volume e Tendência")
+            fig = gerar_grafico_profissional(dados_plot, ativo_escolhido)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 3. RELATÓRIO DA IA E BOTÃO PDF (ABAIXO DO GRÁFICO)
             if usar_ia:
-                with col_ia:
-                    st.subheader("🧠 Relatório Quantitativo IA")
-                    with st.spinner("Analisando indicadores..."):
-                        # O Novo Prompt Profissional
-                        prompt = f"""
-                        Você é um Trader Quantitativo Institucional Sênior, especialista em Criptomoedas e Ações.
-                        Gere um relatório de análise técnica avançado e altamente profissional em Markdown para o ativo {ativo_escolhido}.
+                st.markdown("---")
+                st.markdown("### 🧠 Veredito do Fundo (Inteligência Artificial)")
+                with st.spinner("O Head Trader IA está redigindo o relatório..."):
+                    
+                    # PROMPT ESPECIALIZADO DE TRADE
+                    prompt = f"""
+                    Atue como um Head Trader de um Fundo Hedge de Criptomoedas. 
+                    Escreva um relatório executivo detalhado para o ativo {ativo_escolhido}.
+                    
+                    DADOS TÉCNICOS EXTRAÍDOS:
+                    - Preço Atual: US$ {fechamento_atual:.2f}
+                    - SMA 20 (Curto Prazo): US$ {sma_20:.2f}
+                    - SMA 200 (Macro): US$ {sma_200:.2f}
+                    - RSI (14d): {rsi_atual:.2f}
+                    - MACD Line: {macd_atual:.2f} | Signal Line: {macd_signal:.2f}
+                    - Bandas de Bollinger: Teto US$ {bollinger_up:.2f} | Piso US$ {bollinger_down:.2f}
+                    
+                    FORMATO DE SAÍDA (Use títulos e seja altamente técnico):
+                    ## 🎯 Resumo Executivo
+                    (1 parágrafo direto com a tese principal)
+                    
+                    ## 📊 Análise de Price Action e Momento
+                    (Interpretação do preço atual perante as médias e Bandas de Bollinger)
+                    
+                    ## 🔬 Osciladores (RSI e MACD)
+                    (Avaliação clara de sobrecompra/sobrevenda e força de cruzamentos)
+                    
+                    ## ⚖️ Veredito Oficial
+                    (Conclua claramente: COMPRA FORTE, COMPRA, MANTER, VENDA ou VENDA FORTE. Justifique o risco.)
+                    """
+                    
+                    resposta = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                    st.markdown(resposta.text)
+                    
+                    # 4. GERAÇÃO E DOWNLOAD DO PDF
+                    with st.spinner("Gerando arquivo de PDF para download..."):
+                        pdf_bytes = gerar_pdf_relatorio(
+                            ativo_escolhido, fechamento_atual, rsi_atual, 
+                            macd_atual, sma_200, resposta.text, fig
+                        )
                         
-                        DADOS TÉCNICOS EXTRAÍDOS HOJE:
-                        - Preço Atual: US$ {fechamento_atual:.2f}
-                        - SMA (20 dias): US$ {sma_20:.2f} (Tendência Curta)
-                        - SMA (200 dias): US$ {sma_200:.2f} (Tendência Macro)
-                        - RSI (14 dias): {rsi_atual:.2f}
-                        - MACD Line: {macd_atual:.2f} | Signal Line: {macd_signal:.2f}
-                        - Bandas de Bollinger: Teto US$ {bollinger_up:.2f} | Piso US$ {bollinger_down:.2f}
-                        
-                        ESTRUTURA OBRIGATÓRIA DA SUA RESPOSTA:
-                        1. 📊 **Visão Geral:** Resumo executivo do momento atual.
-                        2. 🔬 **Leitura Técnica:** Interpretação direta do RSI, cruzamento MACD e médias.
-                        3. 🎯 **Zonas de Interesse:** Estipule possíveis suportes e resistências.
-                        4. ⚖️ **Veredito:** [COMPRA FORTE / COMPRA / MANTER / VENDA / VENDA FORTE] com justificativa de risco.
-                        
-                        Seja direto, frio e analítico. Sem enrolação.
-                        """
-                        
-                        resposta = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-                        st.markdown(resposta.text)
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        st.download_button(
+                            label="📥 Baixar Relatório Completo em PDF",
+                            data=pdf_bytes,
+                            file_name=f"Relatorio_Trading_{ativo_escolhido}.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
+                        )
 
         except Exception as e:
             st.error(f"Erro inesperado ao buscar dados. Detalhe: {e}")

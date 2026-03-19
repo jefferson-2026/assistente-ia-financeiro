@@ -2,7 +2,6 @@ streamlit
 yfinance
 pandas
 google-genai
-python-dotenv
 plotly
-fpdf
-kaleido==0.1.0.post1
+fpdf2
+kaleido

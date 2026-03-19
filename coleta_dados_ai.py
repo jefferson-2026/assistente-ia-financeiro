@@ -4,9 +4,10 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google import genai
-from fpdf import FPDF # Importando fpdf2 (ele usa o mesmo nome no código)
+from fpdf import FPDF
 import tempfile
 import os
+import time
 
 # ==========================================
 # CONFIGURAÇÃO GERAL
@@ -20,6 +21,7 @@ client = genai.Client(api_key=MINHA_CHAVE_API)
 # ==========================================
 @st.cache_data(ttl=3600)
 def coletar_dados_historicos(ticker):
+    # TRUQUE SÊNIOR: Buscamos 5 anos escondido para calcular tudo perfeitamente
     dados = yf.download(ticker, period="5y", progress=False)
     
     if isinstance(dados.columns, pd.MultiIndex):
@@ -37,6 +39,7 @@ def coletar_dados_historicos(ticker):
     
     dados = dados.rename(columns={col_close: 'Close', col_high: 'High', col_low: 'Low', col_open: 'Open', col_vol: 'Volume'})
     
+    # --- CÁLCULO DE INDICADORES (Com Histórico Completo) ---
     dados['SMA_20'] = dados['Close'].rolling(window=20).mean()
     dados['SMA_200'] = dados['Close'].rolling(window=200).mean() 
     
@@ -75,7 +78,7 @@ def gerar_grafico_profissional(dados, nome_ativo):
     fig.add_trace(go.Scatter(x=dados.index, y=dados['MACD_Line'], line=dict(color='orange', width=1.5), name='MACD Line'), row=3, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados['MACD_Signal'], line=dict(color='cyan', width=1.5), name='Signal Line'), row=3, col=1)
 
-    fig.update_layout(title=f'Análise Técnica Institucional - {nome_ativo}', template='plotly_dark', xaxis_rangeslider_visible=False, height=800)
+    fig.update_layout(title=f'Análise Técnica Institucional - {nome_ativo}', template='plotly_dark', xaxis_rangeslider_visible=False, height=850)
     return fig
 
 def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, sma200, texto_ia, fig_original):
@@ -88,37 +91,62 @@ def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, sma200, texto_ia, fig_ori
     pdf.cell(0, 10, f"Relatorio de Analise Oficial: {ticker}", 0, 1, 'C')
     pdf.ln(5)
     
-    # Adicionando Métricas no PDF
-    pdf.set_font("helvetica", 'B', 11)
-    pdf.cell(0, 10, f"Preco Atual: US$ {fechamento:.2f}  |  MME 200 Dias: US$ {sma200:.2f}", 0, 1)
-    pdf.cell(0, 10, f"RSI 14 Dias: {rsi:.2f}  |  MACD Line: {macd:.2f}", 0, 1)
-    pdf.ln(5)
+    # Detecção Inteligente: Estamos na nuvem do Streamlit ou Local?
+    rodando_na_nuvem = "STREAMLIT_SERVER_PORT" in os.environ or "KUBERNETES_PORT" in os.environ
     
-    # Gerando Imagem do Gráfico
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            fig_pdf = go.Figure(fig_original)
-            fig_pdf.update_layout(template='plotly_white', height=550) 
-            fig_pdf.write_image(tmp.name)
-            pdf.image(tmp.name, x=10, w=190)
-            os.unlink(tmp.name) 
-    except Exception as e:
-        pdf.cell(0, 10, f"(Aviso: Nao foi possivel gerar a imagem do grafico. Detalhe: {e})", 0, 1)
+    if not rodando_na_nuvem:
+        # ---- MODO LOCAL: GERA A IMAGEM DO GRÁFICO ----
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                fig_pdf = go.Figure(fig_original)
+                fig_pdf.update_layout(template='plotly_white', height=450) 
+                fig_pdf.write_image(tmp.name, format="png", engine="kaleido")
+                time.sleep(0.5) 
+                pdf.image(tmp.name, x=10, w=190)
+                os.unlink(tmp.name)
+        except Exception as e:
+            # Se der erro mesmo localmente, força a cair no plano da tabela
+            rodando_na_nuvem = True 
+    
+    if rodando_na_nuvem:
+        # ---- MODO NUVEM: GERA UMA TABELA FINANCEIRA ELEGANTE ----
+        pdf.set_font("helvetica", 'B', 12)
+        pdf.cell(0, 10, "Indicadores Tecnicos de Curto e Longo Prazo", 0, 1)
         
-    pdf.add_page()
+        pdf.set_font("helvetica", '', 10)
+        with pdf.table(col_widths=(40, 60), text_align="LEFT") as table:
+            row = table.row()
+            row.cell("Preco Atual:")
+            row.cell(f"US$ {fechamento:.2f}")
+            
+            row = table.row()
+            row.cell("MME 200 Dias:")
+            row.cell(f"US$ {sma200:.2f}")
+            
+            row = table.row()
+            row.cell("RSI (14 Dias):")
+            row.cell(f"{rsi:.2f} " + ("(Sobrecomprado)" if rsi > 70 else "(Sobrevendido)" if rsi < 30 else "(Neutro)"))
+            
+            row = table.row()
+            row.cell("MACD Line:")
+            row.cell(f"{macd:.2f}")
+        pdf.ln(5)
+
+    # TEXTO DA INTELIGÊNCIA ARTIFICIAL
+    pdf.ln(5)
     pdf.set_font("helvetica", 'B', 14)
     pdf.cell(0, 10, "Veredito do Algoritmo IA (Fundo Hedge)", 0, 1)
     pdf.ln(5)
     
-    pdf.set_font("helvetica", '', 12)
+    # Limpeza do Markdown para formato puro de texto no PDF
+    pdf.set_font("helvetica", '', 11)
     texto_limpo = str(texto_ia).replace("**", "").replace("*", "").replace("#", "")
     texto_limpo = texto_limpo.encode('latin-1', 'replace').decode('latin-1') 
     
-    pdf.multi_cell(0, 7, texto_limpo)
+    pdf.multi_cell(0, 6, texto_limpo)
         
-    # CORREÇÃO AQUI: O FPDF2 usa apenas .output() e já retorna os bytes diretos!
     return bytes(pdf.output())
-    
+
 # ==========================================
 # INTERFACE DO USUÁRIO (FRONTEND TELA CHEIA)
 # ==========================================
@@ -144,6 +172,7 @@ st.markdown("---")
 if btn_analisar:
     with st.spinner(f"Processando algoritmo institucional para {ativo_escolhido}..."):
         try:
+            # 1. COLETA E PROCESSAMENTO
             dados_completos = coletar_dados_historicos(ativo_escolhido)
             dados_plot = dados_completos.tail(dias_plot)
             
@@ -156,7 +185,7 @@ if btn_analisar:
             sma_20 = dados_plot['SMA_20'].iloc[-1]
             sma_200 = dados_plot['SMA_200'].iloc[-1]
             
-            # 1. MÉTRICAS EM TELA CHEIA
+            # 2. MÉTRICAS EM TELA CHEIA
             st.markdown("### 📊 Indicadores Quantitativos Atuais")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Preço Atual", f"US$ {fechamento_atual:.2f}")
@@ -164,12 +193,12 @@ if btn_analisar:
             m3.metric("MACD Status", "Alta (Bullish)" if macd_atual > macd_signal else "Baixa (Bearish)", delta_color="normal" if macd_atual > macd_signal else "inverse")
             m4.metric("SMA 200 (Macro)", f"US$ {sma_200:.2f}")
             
-            # 2. GRÁFICO EM TELA CHEIA
+            # 3. GRÁFICO EM TELA CHEIA
             st.markdown("### 📈 Gráfico de Preços, Volume e Tendência")
             fig = gerar_grafico_profissional(dados_plot, ativo_escolhido)
             st.plotly_chart(fig, use_container_width=True)
             
-            # 3. RELATÓRIO DA IA E BOTÃO PDF (ABAIXO DO GRÁFICO)
+            # 4. RELATÓRIO DA IA E BOTÃO PDF (ABAIXO DO GRÁFICO)
             if usar_ia:
                 st.markdown("---")
                 st.markdown("### 🧠 Veredito do Fundo (Inteligência Artificial)")
@@ -205,9 +234,8 @@ if btn_analisar:
                     resposta = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
                     st.markdown(resposta.text)
                     
-                    # 4. GERAÇÃO E DOWNLOAD DO PDF
+                    # 5. GERAÇÃO E DOWNLOAD DO PDF
                     with st.spinner("Gerando arquivo de PDF para download..."):
-                        # O FPDF2 retorna bytes se a saída for para uma variável de memória
                         pdf_bytes = gerar_pdf_relatorio(
                             ativo_escolhido, fechamento_atual, rsi_atual, 
                             macd_atual, sma_200, resposta.text, fig
@@ -215,7 +243,7 @@ if btn_analisar:
                         
                         st.markdown("<br>", unsafe_allow_html=True)
                         st.download_button(
-                            label="📥 Baixar Relatório Completo em PDF",
+                            label="📥 Baixar Relatório Oficial em PDF",
                             data=pdf_bytes,
                             file_name=f"Relatorio_Trading_{ativo_escolhido}.pdf",
                             mime="application/pdf",

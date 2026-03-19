@@ -17,7 +17,8 @@ client = genai.Client(api_key=MINHA_CHAVE_API)
 # ==========================================
 @st.cache_data(ttl=3600)
 def coletar_dados_financeiros(ticker, periodo):
-    dados = yf.download(ticker, period=period, progress=False)
+    # CORREÇÃO AQUI: period=periodo
+    dados = yf.download(ticker, period=periodo, progress=False)
     
     if isinstance(dados.columns, pd.MultiIndex):
         dados.columns = ["_".join(map(str, col)).strip() for col in dados.columns.values]
@@ -87,8 +88,9 @@ col_input1, col_input2, col_input3 = st.columns([2, 2, 1])
 with col_input1:
     ativo_escolhido = st.text_input("Ativo (ex: BTC-USD, PETR4.SA)", value="BTC-USD")
 with col_input2:
-    # O usuário agora pode escolher o período de análise na tela
-    periodo_escolhido = st.selectbox("Período de Análise", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=2) # Padrão: 6 meses
+    # LISTA EXPANDIDA COM TODOS OS PERÍODOS POSSÍVEIS DO YAHOO FINANCE
+    opcoes_periodo = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]
+    periodo_escolhido = st.selectbox("Período de Análise", opcoes_periodo, index=4) # Padrão: 6mo
 with col_input3:
     st.write("") # Espaçamento
     btn_analisar = st.button("Executar Análise", use_container_width=True)
@@ -98,50 +100,54 @@ if btn_analisar:
         try:
             dados = coletar_dados_financeiros(ativo_escolhido, periodo_escolhido)
             
-            fechamento_atual = dados['Close'].iloc[-1]
-            rsi_atual = dados['RSI_14'].iloc[-1]
-            macd_atual = dados['MACD_Line'].iloc[-1]
-            macd_signal = dados['MACD_Signal'].iloc[-1]
-            bollinger_up = dados['Bollinger_Upper'].iloc[-1]
-            bollinger_down = dados['Bollinger_Lower'].iloc[-1]
-            
-            col_grafico, col_ia = st.columns([2.5, 1]) 
-            
-            with col_grafico:
-                # Topo de métricas
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Preço Atual", f"US$ {fechamento_atual:.2f}")
-                m2.metric("RSI (14d)", f"{rsi_atual:.2f}", "Alerta: Sobrecompra" if rsi_atual > 70 else "Alerta: Sobrevenda" if rsi_atual < 30 else "Neutro")
-                m3.metric("MACD", "Alta (Bullish)" if macd_atual > macd_signal else "Baixa (Bearish)", delta_color="normal" if macd_atual > macd_signal else "inverse")
-                m4.metric("Distância Banda Sup.", f"{((bollinger_up - fechamento_atual) / fechamento_atual * 100):.1f}%")
+            # Validação para períodos muito curtos (1d ou 5d) que quebram o cálculo de média de 20 dias
+            if len(dados) < 20:
+                st.warning("⚠️ Período selecionado é muito curto para calcular indicadores técnicos (Média Móvel de 20d e MACD requerem mais dados). Por favor, selecione pelo menos '1mo' (1 mês) para uma análise completa.")
+            else:
+                fechamento_atual = dados['Close'].iloc[-1]
+                rsi_atual = dados['RSI_14'].iloc[-1]
+                macd_atual = dados['MACD_Line'].iloc[-1]
+                macd_signal = dados['MACD_Signal'].iloc[-1]
+                bollinger_up = dados['Bollinger_Upper'].iloc[-1]
+                bollinger_down = dados['Bollinger_Lower'].iloc[-1]
                 
-                # Gráfico com os 2 painéis
-                st.plotly_chart(gerar_grafico_profissional(dados, ativo_escolhido), use_container_width=True)
+                col_grafico, col_ia = st.columns([2.5, 1]) 
                 
-            with col_ia:
-                st.subheader("🧠 Conselheiro IA Sênior")
-                
-                # O Prompt Sênior: Enviamos TODOS os indicadores para a IA pensar como um Robô de Wall Street
-                resumo_para_ia = f"""
-                Atue como um Algoritmo de Trading Quantitativo Sênior. Avalie o ativo {ativo_escolhido}.
-                
-                DADOS TÉCNICOS ATUAIS:
-                - Preço: US$ {fechamento_atual:.2f}
-                - RSI (14 dias): {rsi_atual:.2f}
-                - MACD Line: {macd_atual:.2f} | Signal Line: {macd_signal:.2f}
-                - Banda de Bollinger Superior: US$ {bollinger_up:.2f}
-                - Banda de Bollinger Inferior: US$ {bollinger_down:.2f}
-                
-                REGRAS DE ANÁLISE:
-                1. MACD Line acima da Signal Line indica tendência de alta.
-                2. Preço encostando na Banda Superior indica sobrecompra iminente; na Inferior, oportunidade de compra.
-                3. RSI acima de 70 = Cuidado (correção); abaixo de 30 = Fundo (potencial alta).
-                
-                Forneça um relatório direto, citando os dados. Termine com um veredito claro: COMPRAR, VENDER ou MANTER.
-                """
-                
-                resposta = client.models.generate_content(model="gemini-2.5-flash", contents=resumo_para_ia)
-                st.info(resposta.text)
+                with col_grafico:
+                    # Topo de métricas
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Preço Atual", f"US$ {fechamento_atual:.2f}")
+                    m2.metric("RSI (14d)", f"{rsi_atual:.2f}", "Alerta: Sobrecompra" if rsi_atual > 70 else "Alerta: Sobrevenda" if rsi_atual < 30 else "Neutro")
+                    m3.metric("MACD", "Alta (Bullish)" if macd_atual > macd_signal else "Baixa (Bearish)", delta_color="normal" if macd_atual > macd_signal else "inverse")
+                    m4.metric("Distância Banda Sup.", f"{((bollinger_up - fechamento_atual) / fechamento_atual * 100):.1f}%")
+                    
+                    # Gráfico com os 2 painéis
+                    st.plotly_chart(gerar_grafico_profissional(dados, ativo_escolhido), use_container_width=True)
+                    
+                with col_ia:
+                    st.subheader("🧠 Conselheiro IA Sênior")
+                    
+                    # O Prompt Sênior
+                    resumo_para_ia = f"""
+                    Atue como um Algoritmo de Trading Quantitativo Sênior. Avalie o ativo {ativo_escolhido}.
+                    
+                    DADOS TÉCNICOS ATUAIS:
+                    - Preço: US$ {fechamento_atual:.2f}
+                    - RSI (14 dias): {rsi_atual:.2f}
+                    - MACD Line: {macd_atual:.2f} | Signal Line: {macd_signal:.2f}
+                    - Banda de Bollinger Superior: US$ {bollinger_up:.2f}
+                    - Banda de Bollinger Inferior: US$ {bollinger_down:.2f}
+                    
+                    REGRAS DE ANÁLISE:
+                    1. MACD Line acima da Signal Line indica tendência de alta.
+                    2. Preço encostando na Banda Superior indica sobrecompra iminente; na Inferior, oportunidade de compra.
+                    3. RSI acima de 70 = Cuidado (correção); abaixo de 30 = Fundo (potencial alta).
+                    
+                    Forneça um relatório direto, citando os dados. Termine com um veredito claro: COMPRAR, VENDER ou MANTER.
+                    """
+                    
+                    resposta = client.models.generate_content(model="gemini-2.5-flash", contents=resumo_para_ia)
+                    st.info(resposta.text)
 
         except Exception as e:
-            st.error(f"Erro ao processar indicadores. Tente aumentar o período de análise. Detalhe: {e}")
+            st.error(f"Erro ao processar indicadores. Detalhe: {e}")

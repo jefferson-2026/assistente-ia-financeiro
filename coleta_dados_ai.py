@@ -79,7 +79,6 @@ def gerar_grafico_profissional(dados, nome_ativo):
     return fig
 
 def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, sma200, texto_ia, fig_original):
-    # Usando a versão moderna do FPDF
     pdf = FPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -99,11 +98,10 @@ def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, sma200, texto_ia, fig_ori
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             fig_pdf = go.Figure(fig_original)
-            # Imagem no PDF precisa de fundo branco para ficar visível
             fig_pdf.update_layout(template='plotly_white', height=550) 
             fig_pdf.write_image(tmp.name)
             pdf.image(tmp.name, x=10, w=190)
-            os.unlink(tmp.name) # Apaga a imagem temporária
+            os.unlink(tmp.name) 
     except Exception as e:
         pdf.cell(0, 10, f"(Aviso: Nao foi possivel gerar a imagem do grafico. Detalhe: {e})", 0, 1)
         
@@ -112,16 +110,15 @@ def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, sma200, texto_ia, fig_ori
     pdf.cell(0, 10, "Veredito do Algoritmo IA (Fundo Hedge)", 0, 1)
     pdf.ln(5)
     
-    # Limpando emojis e negritos pro PDF não quebrar
     pdf.set_font("helvetica", '', 12)
     texto_limpo = str(texto_ia).replace("**", "").replace("*", "").replace("#", "")
     texto_limpo = texto_limpo.encode('latin-1', 'replace').decode('latin-1') 
     
     pdf.multi_cell(0, 7, texto_limpo)
         
-    # O output(dest='S') salva o PDF como bytes na memória
-    return pdf.output(dest='S')
-
+    # CORREÇÃO AQUI: O FPDF2 usa apenas .output() e já retorna os bytes diretos!
+    return bytes(pdf.output())
+    
 # ==========================================
 # INTERFACE DO USUÁRIO (FRONTEND TELA CHEIA)
 # ==========================================

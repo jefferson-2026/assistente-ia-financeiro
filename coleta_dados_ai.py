@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from google import genai
-from fpdf import FPDF
+from fpdf import FPDF # Importando fpdf2 (ele usa o mesmo nome no código)
 import tempfile
 import os
 
@@ -79,45 +79,48 @@ def gerar_grafico_profissional(dados, nome_ativo):
     return fig
 
 def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, sma200, texto_ia, fig_original):
+    # Usando a versão moderna do FPDF
     pdf = FPDF()
     pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
     # Cabeçalho do PDF
-    pdf.set_font("Arial", 'B', 16)
+    pdf.set_font("helvetica", 'B', 16)
     pdf.cell(0, 10, f"Relatorio de Analise Oficial: {ticker}", 0, 1, 'C')
     pdf.ln(5)
     
     # Adicionando Métricas no PDF
-    pdf.set_font("Arial", 'B', 11)
+    pdf.set_font("helvetica", 'B', 11)
     pdf.cell(0, 10, f"Preco Atual: US$ {fechamento:.2f}  |  MME 200 Dias: US$ {sma200:.2f}", 0, 1)
     pdf.cell(0, 10, f"RSI 14 Dias: {rsi:.2f}  |  MACD Line: {macd:.2f}", 0, 1)
     pdf.ln(5)
     
-    # Gerando Imagem do Gráfico (Fundo branco para impressão limpa)
+    # Gerando Imagem do Gráfico
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             fig_pdf = go.Figure(fig_original)
+            # Imagem no PDF precisa de fundo branco para ficar visível
             fig_pdf.update_layout(template='plotly_white', height=550) 
-            fig_pdf.write_image(tmp.name, engine="kaleido")
+            fig_pdf.write_image(tmp.name)
             pdf.image(tmp.name, x=10, w=190)
             os.unlink(tmp.name) # Apaga a imagem temporária
     except Exception as e:
         pdf.cell(0, 10, f"(Aviso: Nao foi possivel gerar a imagem do grafico. Detalhe: {e})", 0, 1)
         
     pdf.add_page()
-    pdf.set_font("Arial", 'B', 14)
+    pdf.set_font("helvetica", 'B', 14)
     pdf.cell(0, 10, "Veredito do Algoritmo IA (Fundo Hedge)", 0, 1)
     pdf.ln(5)
     
-    # Formatando o texto da IA para compatibilidade com o PDF (Removendo Markdown)
-    pdf.set_font("Arial", '', 12)
-    texto_limpo = texto_ia.replace("**", "").replace("*", "").replace("#", "")
-    texto_limpo = texto_limpo.encode('ascii', 'ignore').decode('ascii') # Remove Emojis
+    # Limpando emojis e negritos pro PDF não quebrar
+    pdf.set_font("helvetica", '', 12)
+    texto_limpo = str(texto_ia).replace("**", "").replace("*", "").replace("#", "")
+    texto_limpo = texto_limpo.encode('latin-1', 'replace').decode('latin-1') 
     
-    for linha in texto_limpo.split('\n'):
-        pdf.multi_cell(0, 7, linha)
+    pdf.multi_cell(0, 7, texto_limpo)
         
-    return pdf.output(dest='S').encode('latin-1')
+    # O output(dest='S') salva o PDF como bytes na memória
+    return pdf.output(dest='S')
 
 # ==========================================
 # INTERFACE DO USUÁRIO (FRONTEND TELA CHEIA)
@@ -207,6 +210,7 @@ if btn_analisar:
                     
                     # 4. GERAÇÃO E DOWNLOAD DO PDF
                     with st.spinner("Gerando arquivo de PDF para download..."):
+                        # O FPDF2 retorna bytes se a saída for para uma variável de memória
                         pdf_bytes = gerar_pdf_relatorio(
                             ativo_escolhido, fechamento_atual, rsi_atual, 
                             macd_atual, sma_200, resposta.text, fig

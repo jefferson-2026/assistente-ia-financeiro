@@ -18,7 +18,7 @@ client = genai.Client(api_key=MINHA_CHAVE_API)
 # O @st.cache_data faz o app não baixar os mesmos dados repetidas vezes (TTL = expira em 1 hora)
 @st.cache_data(ttl=3600)
 def coletar_dados_financeiros(ticker, periodo="60d"):
-    dados = yf.download(ticker, period=period, progress=False)
+    dados = yf.download(ticker, period=periodo, progress=False)
     
     # Tratamento de MultiIndex do yfinance
     if isinstance(dados.columns, pd.MultiIndex):

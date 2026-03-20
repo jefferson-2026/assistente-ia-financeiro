@@ -14,36 +14,32 @@ from plotly.subplots import make_subplots
 # ==========================================
 # CONFIG GERAL E CHAVES
 # ==========================================
-st.set_page_config(page_title="Terminal Crypto IA Pro", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Terminal Crypto Pro", page_icon="⚡", layout="wide")
 
 GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
 NEWS_KEY = st.secrets.get("NEWS_API_KEY", "")
 client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
-# Endpoints Oficiais
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 BYBIT_FUTURES_BASE = "https://api.bybit.com"
 
 # ==========================================
-# MOTOR DE INDICADORES (ÚNICO PARA TODAS AS APIs)
+# MOTOR DE INDICADORES
 # ==========================================
 def calcular_indicadores(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Médias Móveis e Bandas de Bollinger
     df["SMA_20"] = df["Close"].rolling(window=20).mean()
     df["SMA_200"] = df["Close"].rolling(window=200).mean()
     df["Std_Dev"] = df["Close"].rolling(window=20).std()
     df["Bollinger_Upper"] = df["SMA_20"] + (df["Std_Dev"] * 2)
     df["Bollinger_Lower"] = df["SMA_20"] - (df["Std_Dev"] * 2)
 
-    # MACD
     ema_12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema_26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD_Line"] = ema_12 - ema_26
     df["MACD_Signal"] = df["MACD_Line"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD_Line"] - df["MACD_Signal"]
 
-    # RSI
     delta = df["Close"].diff()
     ganho = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     perda = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -53,7 +49,7 @@ def calcular_indicadores(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ==========================================
-# COLETAS DE DADOS (BINANCE E BYBIT)
+# COLETAS DE DADOS
 # ==========================================
 def coletar_dados_binance_futuros(ticker: str, intervalo: str) -> pd.DataFrame:
     url = f"{BINANCE_FUTURES_BASE}/fapi/v1/klines"
@@ -80,7 +76,6 @@ def coletar_dados_binance_futuros(ticker: str, intervalo: str) -> pd.DataFrame:
     return calcular_indicadores(df)
 
 def coletar_dados_bybit_futuros(ticker: str, intervalo: str) -> pd.DataFrame:
-    # Conversor de tempo Binance -> Bybit (Bybit V5 exige minutos)
     mapa_bybit = {
         "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
         "1h": "60", "2h": "120", "4h": "240", "6h": "360", "8h": "480",
@@ -102,7 +97,6 @@ def coletar_dados_bybit_futuros(ticker: str, intervalo: str) -> pd.DataFrame:
     if not lista_velas:
         raise ValueError("Bybit não tem dados para este ativo/timeframe.")
         
-    # Bybit retorna da MAIS NOVA para a MAIS VELHA. Invertemos para normalizar!
     lista_velas = lista_velas[::-1]
     
     df = pd.DataFrame(lista_velas, columns=["startTime", "Open", "High", "Low", "Close", "Volume", "turnover"])
@@ -119,7 +113,6 @@ def coletar_dados_bybit_futuros(ticker: str, intervalo: str) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def orquestrador_de_dados(ticker: str, intervalo: str) -> pd.DataFrame:
     erros = []
-    # Tentativa 1: Binance
     try:
         df = coletar_dados_binance_futuros(ticker, intervalo)
         st.session_state["fonte_dados"] = "Binance Futures (Oficial)"
@@ -127,7 +120,6 @@ def orquestrador_de_dados(ticker: str, intervalo: str) -> pd.DataFrame:
     except Exception as e_bin:
         erros.append(f"Binance: {str(e_bin)}")
         
-    # Tentativa 2: Bybit (Fallback)
     try:
         df = coletar_dados_bybit_futuros(ticker, intervalo)
         st.session_state["fonte_dados"] = "Bybit Linear Futures (Fallback)"
@@ -140,6 +132,15 @@ def orquestrador_de_dados(ticker: str, intervalo: str) -> pd.DataFrame:
 # ==========================================
 # RESTANTE DO SISTEMA (Gráficos, News, Backtest, PDF)
 # ==========================================
+def formatar_moeda(valor):
+    """Detecta se a moeda é muito barata e ajusta as casas decimais."""
+    if valor < 0.01:
+        return f"{valor:.6f}"
+    elif valor < 1:
+        return f"{valor:.4f}"
+    else:
+        return f"{valor:.2f}"
+
 def gerar_grafico_profissional(dados, nome_ativo, intervalo):
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.15, 0.25])
 
@@ -159,16 +160,15 @@ def gerar_grafico_profissional(dados, nome_ativo, intervalo):
     fig.add_trace(go.Scatter(x=dados.index, y=dados["MACD_Line"], line=dict(color="orange", width=1.5), name="MACD Line"), row=3, col=1)
     fig.add_trace(go.Scatter(x=dados.index, y=dados["MACD_Signal"], line=dict(color="cyan", width=1.5), name="Signal Line"), row=3, col=1)
 
-    fig.update_layout(title=f"Análise {nome_ativo} ({intervalo})", template="plotly_dark", xaxis_rangeslider_visible=False, height=750, margin=dict(l=0, r=0, t=40, b=0))
+    fig.update_layout(title=f"Ação do Preço - {nome_ativo} ({intervalo})", template="plotly_dark", xaxis_rangeslider_visible=False, height=750, margin=dict(l=0, r=0, t=40, b=0))
     return fig
 
 @st.cache_data(ttl=1800)
 def buscar_noticias(ticker):
     if not NEWS_KEY: return [], "API Key não configurada."
-    termo_busca = ticker.upper().replace("USDT", "").replace("USD", "")
+    termo_busca = ticker.upper().replace("1000", "").replace("USDT", "").replace("USD", "")
     data_ontem = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     
-    # Adicionamos "crypto" ou "fed" para forçar o NewsAPI a trazer contexto financeiro relevante
     query = f"({termo_busca} crypto) OR (Federal Reserve rate)"
     url = f"https://newsapi.org/v2/everything?q={query}&from={data_ontem}&sortBy=relevancy&language=en&apiKey={NEWS_KEY}"
     
@@ -206,24 +206,29 @@ def executar_backtest_macd(dados, margem, alavancagem, taxa_corretora):
     win_rate = float(portfolio.trades.win_rate() * 100) if portfolio.trades.count() > 0 else 0.0
     return fig_bt, lucro, win_rate
 
-def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, texto_ia):
+def gerar_pdf_relatorio(ticker, fechamento, max_preco, min_preco, rsi, texto_ia):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_font("helvetica", "B", 16)
-    pdf.cell(0, 10, f"Relatorio Oficial do Fundo: {ticker}", 0, 1, "C")
+    pdf.cell(0, 10, f"Relatorio Oficial de Operacao: {ticker}", 0, 1, "C")
     pdf.ln(5)
+    
     pdf.set_font("helvetica", "B", 12)
-    pdf.cell(0, 10, "Indicadores Tecnicos", 0, 1)
+    pdf.cell(0, 10, "Raio-X de Preco e Indicadores", 0, 1)
     pdf.set_font("helvetica", "", 10)
+    
     with pdf.table(col_widths=(45, 70), text_align="LEFT") as table:
-        row = table.row(); row.cell("Preco Atual:"); row.cell(f"US$ {fechamento:.6f}")
-        row = table.row(); row.cell("RSI:"); row.cell(f"{rsi:.2f}")
-        row = table.row(); row.cell("MACD:"); row.cell(f"{macd:.6f}")
+        row = table.row(); row.cell("Preco Atual:"); row.cell(f"US$ {formatar_moeda(fechamento)}")
+        row = table.row(); row.cell("Maxima (Periodo):"); row.cell(f"US$ {formatar_moeda(max_preco)}")
+        row = table.row(); row.cell("Minima (Periodo):"); row.cell(f"US$ {formatar_moeda(min_preco)}")
+        row = table.row(); row.cell("RSI 14:"); row.cell(f"{rsi:.2f}")
+        
     pdf.ln(5)
     pdf.set_font("helvetica", "B", 14)
-    pdf.cell(0, 10, "Veredito da IA", 0, 1)
+    pdf.cell(0, 10, "Veredito Institucional da Inteligencia Artificial", 0, 1)
     pdf.ln(5)
+    
     pdf.set_font("helvetica", "", 11)
     texto_limpo = str(texto_ia).replace("**", "").replace("*", "").replace("#", "")
     texto_limpo = texto_limpo.encode("latin-1", "replace").decode("latin-1")
@@ -233,20 +238,26 @@ def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, texto_ia):
 # ==========================================
 # FRONTEND - INTERFACE PRINCIPAL
 # ==========================================
-st.title("⚡ Terminal Institucional de Futuros & IA")
+st.title("⚡ Terminal Institucional de Futuros")
 
 st.markdown("---")
-col1, col2, col3, col4 = st.columns([2, 1.5, 2, 2])
+# A linha principal de inputs: agora com o Toggle da IA!
+col1, col2, col3, col4, col5 = st.columns([1.5, 1, 1.5, 1, 1.2])
 with col1:
-    ativo = st.text_input("Ticker Futuros", value="BTCUSDT", help="Use padrão USDT. Ex: BTCUSDT, WLFIUSDT")
+    ativo = st.text_input("Ticker Futuros", value="BTCUSDT")
 with col2:
-    intervalos = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "1w", "1M"]
-    sel_intervalo = st.selectbox("Timeframe (Vela)", intervalos, index=5)
+    intervalos = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"]
+    sel_intervalo = st.selectbox("Timeframe", intervalos, index=4)
 with col3:
     qtd_velas = st.slider("Qtd. Velas no Gráfico", min_value=50, max_value=1000, value=200, step=50)
 with col4:
     st.write("")
-    btn = st.button("Analisar Mercado", type="primary", use_container_width=True)
+    st.write("")
+    # NOVO: CHAVE PARA LIGAR/DESLIGAR A IA E POUPAR TOKENS
+    ativar_ia = st.toggle("🧠 Usar IA", value=False) 
+with col5:
+    st.write("")
+    btn = st.button("Analisar", type="primary", use_container_width=True)
 
 with st.expander("⚙️ Configurações de Risco do Backtesting", expanded=False):
     r1, r2, r3 = st.columns(3)
@@ -259,7 +270,7 @@ st.markdown("---")
 if btn:
     with st.spinner(f"Extraindo dados via API Institucional para {ativo}..."):
         try:
-            # Chama o Orquestrador (Tenta Binance, se der restrição pula pra Bybit sozinho)
+            # Chama Orquestrador
             dados_completos = orquestrador_de_dados(ativo, sel_intervalo)
 
             if dados_completos.empty:
@@ -269,25 +280,44 @@ if btn:
             # Corta para o tamanho do slider
             dados_plot = dados_completos.tail(qtd_velas).copy()
             if dados_plot.empty:
-                st.error("Sem dados no recorte. Tente aumentar a quantidade de velas ou trocar o timeframe.")
+                st.error("Sem dados no recorte.")
                 st.stop()
 
-            # Extração segura de indicadores
-            fechamento = float(dados_plot["Close"].dropna().iloc[-1])
+            # CÁLCULOS NOVOS DE MÁXIMAS, MÍNIMAS E VARIAÇÃO
+            fechamento_atual = float(dados_plot["Close"].dropna().iloc[-1])
+            abertura_inicial = float(dados_plot["Open"].dropna().iloc[0])
+            
+            # Pega o maior 'High' e menor 'Low' de TODAS as velas que estão na tela
+            maxima_periodo = float(dados_plot["High"].max())
+            minima_periodo = float(dados_plot["Low"].min())
+            
+            # Variação em % do começo do gráfico até agora
+            variacao_perc = ((fechamento_atual - abertura_inicial) / abertura_inicial) * 100
+
+            # Indicadores clássicos
             rsi_series = dados_plot["RSI_14"].dropna()
             macd_series = dados_plot["MACD_Line"].dropna()
             macd_signal_series = dados_plot["MACD_Signal"].dropna()
-
             rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
             macd = float(macd_series.iloc[-1]) if not macd_series.empty else 0.0
             macd_signal = float(macd_signal_series.iloc[-1]) if not macd_signal_series.empty else 0.0
 
+            # Puxa notícias (sempre rodamos para o backtest, mas a IA só usa se ligada)
             noticias_lista, noticias_texto = buscar_noticias(ativo)
 
-            tab1, tab2, tab3 = st.tabs(["📈 Gráficos Perpétuos", "📰 Notícias & Macro", "⏳ Simulador de Lucros"])
+            # --- NOVO PAINEL DE MÉTRICAS (MÁXIMA E MÍNIMA) NO TOPO ---
+            st.success(f"Fonte de Dados: **{st.session_state.get('fonte_dados')}**")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Preço Atual", f"US$ {formatar_moeda(fechamento_atual)}", f"{variacao_perc:.2f}%", delta_color="normal")
+            m2.metric("Máxima do Período", f"US$ {formatar_moeda(maxima_periodo)}", "Topo Resistência", delta_color="off")
+            m3.metric("Mínima do Período", f"US$ {formatar_moeda(minima_periodo)}", "Fundo Suporte", delta_color="off")
+            m4.metric("Tendência MACD", "Compradora (Bullish)" if macd > macd_signal else "Vendedora (Bearish)")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            tab1, tab2, tab3 = st.tabs(["📈 Gráficos", "📰 Notícias & Macro", "⏳ Backtest Strategy"])
 
             with tab1:
-                st.success(f"Dados extraídos com sucesso de: **{st.session_state.get('fonte_dados')}**")
                 st.plotly_chart(gerar_grafico_profissional(dados_plot, ativo, sel_intervalo), use_container_width=True)
 
             with tab2:
@@ -308,32 +338,36 @@ if btn:
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Lucro Líquido Real", f"US$ {lucro:.2f}", delta="Gain" if lucro > 0 else "Loss", delta_color="normal" if lucro > 0 else "inverse")
                 roe = (lucro / margem) * 100 if margem > 0 else 0
-                c2.metric("Retorno s/ Banca (ROE)", f"{roe:.1f}%")
+                c2.metric("Retorno s/ Margem (ROE)", f"{roe:.1f}%")
                 c3.metric("Taxa de Acerto (Win Rate)", f"{winrate:.1f}%")
 
                 st.plotly_chart(fig_bt, use_container_width=True)
 
-            if client:
+            # --- SÓ RODA A IA SE O USUÁRIO ATIVOU O BOTÃO DE TOGGLE ---
+            if ativar_ia and client:
                 st.markdown("---")
-                st.subheader("🧠 Veredito Final (IA Institucional)")
-                with st.spinner("IA do Fundo cruzando dados técnicos e macro..."):
+                st.subheader("🧠 Relatório do Head Trader (IA)")
+                with st.spinner("IA processando dados em nuvem e redigindo relatório..."):
                     prompt = f"""
                     Atue como Head Trader de Cripto Futuros. Ativo: {ativo} | Timeframe: {sel_intervalo}.
-                    Preço atual: US$ {fechamento:.6f} | RSI: {rsi:.2f} | MACD: {macd:.6f}
-                    Notícias Relevantes / Macroeconomia do FED: {noticias_texto}
+                    Preço atual: US$ {formatar_moeda(fechamento_atual)}. Máxima do período: US$ {formatar_moeda(maxima_periodo)}. Mínima: US$ {formatar_moeda(minima_periodo)}.
+                    RSI: {rsi:.2f} | MACD: {macd:.6f}
+                    Contexto Macro: {noticias_texto}
 
-                    Retorne em Markdown:
+                    Retorne em Markdown limpo:
                     ## 🎯 Resumo Executivo
-                    ## 📊 Ação do Preço
-                    ## 📰 Contexto e Macro (EUA)
-                    ## ⚖️ Setup de Trade (LONG, SHORT ou AGUARDAR)
+                    ## 📊 Análise Gráfica e Pontos de Controle
+                    ## 📰 Contexto Macro / Notícias
+                    ## ⚖️ Setup de Trade (LONG, SHORT ou AGUARDAR e justifique o Risco)
                     """
                     resposta = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
                     st.markdown(resposta.text)
 
-                    with st.spinner("Gerando PDF..."):
-                        pdf_bytes = gerar_pdf_relatorio(ativo, fechamento, rsi, macd, resposta.text)
-                        st.download_button("📥 Baixar Relatório", data=pdf_bytes, file_name=f"Trade_{ativo}.pdf", mime="application/pdf", type="primary")
+                    with st.spinner("Gerando Relatório PDF..."):
+                        pdf_bytes = gerar_pdf_relatorio(ativo, fechamento_atual, maxima_periodo, minima_periodo, rsi, resposta.text)
+                        st.download_button("📥 Baixar PDF do Relatório", data=pdf_bytes, file_name=f"Trade_{ativo}.pdf", mime="application/pdf", type="primary")
+            elif not ativar_ia:
+                st.info("A Inteligência Artificial não foi ativada nesta busca para economizar tokens. Se quiser o relatório completo, ligue o Toggle '🧠 Usar IA' lá em cima e clique em Analisar.")
 
         except Exception as e:
-            st.error(f"Erro crasso na obtenção de dados:\n{e}")
+            st.error(f"Erro na obtenção de dados:\n{e}")

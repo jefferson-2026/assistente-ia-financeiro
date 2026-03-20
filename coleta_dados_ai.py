@@ -10,17 +10,18 @@ from fpdf import FPDF
 import tempfile
 import os
 import time
+import vectorbt as vbt 
 
 # ==========================================
-# CONFIGURAÇÃO GERAL
+# CONFIGURAÇÃO GERAL E CHAVES
 # ==========================================
 st.set_page_config(page_title="Terminal Crypto IA Pro", page_icon="⚡", layout="wide")
-MINHA_CHAVE_API = st.secrets["GEMINI_API_KEY"]
-MINHA_CHAVE_NEWS = st.secrets["NEWS_API_KEY"]
-client = genai.Client(api_key=MINHA_CHAVE_API)
+MINHA_CHAVE_API = st.secrets.get("GEMINI_API_KEY", "")
+MINHA_CHAVE_NEWS = st.secrets.get("NEWS_API_KEY", "")
+client = genai.Client(api_key=MINHA_CHAVE_API) if MINHA_CHAVE_API else None
 
 # ==========================================
-# FUNÇÕES DE BACKEND (GRÁFICOS E NOTÍCIAS)
+# FUNÇÕES DE DADOS E GRÁFICOS
 # ==========================================
 @st.cache_data(ttl=3600)
 def coletar_dados_historicos(ticker):
@@ -75,32 +76,77 @@ def gerar_grafico_profissional(dados, nome_ativo):
     fig.update_layout(title=f'Análise Técnica - {nome_ativo}', template='plotly_dark', xaxis_rangeslider_visible=False, height=750, margin=dict(l=0, r=0, t=40, b=0))
     return fig
 
-# NOVA FUNÇÃO: Busca manchetes de notícias do mercado financeiro mundial
-@st.cache_data(ttl=1800) # Cacheia por 30 minutos para não estourar limite da API
+@st.cache_data(ttl=1800) 
 def buscar_noticias(ticker):
-    # Se for BTC-USD, busca por Bitcoin. Se for PETR4, Petrobras, etc.
+    if not MINHA_CHAVE_NEWS:
+        return [], "API Key de notícias não configurada."
     termo_busca = ticker.split('-')[0] 
     data_ontem = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
-    
     url = f"https://newsapi.org/v2/everything?q={termo_busca}&from={data_ontem}&sortBy=relevancy&language=en&apiKey={MINHA_CHAVE_NEWS}"
     try:
         resposta = requests.get(url)
         dados = resposta.json()
         if dados['status'] == 'ok':
-            # Pega só as 5 notícias mais importantes
             artigos = dados['articles'][:5]
-            texto_compilado = ""
-            for art in artigos:
-                texto_compilado += f"- Título: {art['title']}\n  Fonte: {art['source']['name']}\n\n"
+            texto_compilado = "".join([f"- Título: {art['title']} (Fonte: {art['source']['name']})\n" for art in artigos])
             return artigos, texto_compilado
         return [], "Nenhuma notícia relevante encontrada."
     except Exception as e:
-        return [], f"Erro na coleta de notícias: {e}"
+        return [], f"Erro na coleta: {e}"
+
+# --- BACKTEST MELHORADO COM ALAVANCAGEM ---
+def executar_backtest_macd(dados, margem, alavancagem, taxa_corretora):
+    entradas = dados['MACD_Line'] > dados['MACD_Signal']
+    saidas = dados['MACD_Line'] < dados['MACD_Signal']
+    
+    tamanho_operacao = margem * alavancagem # Ex: US$ 100 com 10x = Posição de US$ 1000
+    caixa_virtual = tamanho_operacao * 10 # Dinheiro infinito para simulação não quebrar
+    
+    portfolio = vbt.Portfolio.from_signals(
+        dados['Close'], 
+        entradas, 
+        saidas, 
+        size=tamanho_operacao, 
+        size_type='value', 
+        init_cash=caixa_virtual, 
+        fees=taxa_corretora
+    )
+    
+    fig_backtest = portfolio.plot(subplots=['orders', 'trade_pnl', 'cum_returns'])
+    fig_backtest.update_layout(template='plotly_dark', height=600, title=f"Simulação: Operando US$ {tamanho_operacao:.2f} por sinal")
+    
+    lucro_total = portfolio.total_profit()
+    win_rate = portfolio.trades.win_rate() * 100 if len(portfolio.trades) > 0 else 0
+    return fig_backtest, lucro_total, win_rate
+
+def gerar_pdf_relatorio(ticker, fechamento, rsi, macd, texto_ia):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("helvetica", 'B', 16)
+    pdf.cell(0, 10, f"Relatorio Oficial do Fundo: {ticker}", 0, 1, 'C')
+    pdf.ln(5)
+    pdf.set_font("helvetica", 'B', 12)
+    pdf.cell(0, 10, "Indicadores Tecnicos de Curto e Longo Prazo", 0, 1)
+    pdf.set_font("helvetica", '', 10)
+    with pdf.table(col_widths=(40, 60), text_align="LEFT") as table:
+        row = table.row(); row.cell("Preco Atual:"); row.cell(f"US$ {fechamento:.2f}")
+        row = table.row(); row.cell("RSI (14 Dias):"); row.cell(f"{rsi:.2f}")
+        row = table.row(); row.cell("MACD Status:"); row.cell(f"{macd:.2f}")
+    pdf.ln(5)
+    pdf.set_font("helvetica", 'B', 14)
+    pdf.cell(0, 10, "Veredito Hibrido da IA", 0, 1)
+    pdf.ln(5)
+    pdf.set_font("helvetica", '', 11)
+    texto_limpo = str(texto_ia).replace("**", "").replace("*", "").replace("#", "")
+    texto_limpo = texto_limpo.encode('latin-1', 'replace').decode('latin-1') 
+    pdf.multi_cell(0, 6, texto_limpo)
+    return bytes(pdf.output())
 
 # ==========================================
 # INTERFACE DO USUÁRIO
 # ==========================================
-st.title("⚡ Terminal Institucional Crypto & IA")
+st.title("⚡ Terminal Quantitativo & Algorítmico")
 
 st.markdown("---")
 col_input1, col_input2, col_input3, col_input4 = st.columns([2, 2, 2, 2])
@@ -112,16 +158,23 @@ with col_input2:
     dias_plot = opcoes_periodo[selecao_texto]
 with col_input3:
     st.write("") 
-    usar_ia = st.toggle("🤖 Usar IA (Análise Gráfica + Sentimento)", value=True)
+    usar_ia = st.toggle("🤖 Usar IA Híbrida", value=True)
 with col_input4:
     st.write("") 
-    btn_analisar = st.button("Executar Scanner Global", type="primary", use_container_width=True)
+    btn_analisar = st.button("Analisar & Backtest", type="primary", use_container_width=True)
+
+# NOVOS INPUTS DE RISCO (FORA DO BOTÃO PARA SALVAR O ESTADO)
+with st.expander("⚙️ Configurações de Risco do Backtesting (Clique para abrir)", expanded=False):
+    c_r1, c_r2, c_r3 = st.columns(3)
+    val_margem = c_r1.number_input("Sua Margem/Banca por Trade (US$)", min_value=10.0, value=100.0, step=10.0)
+    val_alavancagem = c_r2.number_input("Alavancagem (x)", min_value=1, max_value=125, value=1, step=1)
+    val_taxa = c_r3.number_input("Taxa da Corretora (%)", min_value=0.0, value=0.1, step=0.05) / 100
+
 st.markdown("---")
 
 if btn_analisar:
-    with st.spinner(f"Processando gráficos e vasculhando a mídia global por {ativo_escolhido}..."):
+    with st.spinner("Processando Wall Street..."):
         try:
-            # 1. PROCESSAMENTO DE DADOS
             dados_completos = coletar_dados_historicos(ativo_escolhido)
             dados_plot = dados_completos.tail(dias_plot)
             
@@ -129,76 +182,58 @@ if btn_analisar:
             rsi_atual = dados_plot['RSI_14'].iloc[-1]
             macd_atual = dados_plot['MACD_Line'].iloc[-1]
             macd_signal = dados_plot['MACD_Signal'].iloc[-1]
-            bollinger_up = dados_plot['Bollinger_Upper'].iloc[-1]
-            bollinger_down = dados_plot['Bollinger_Lower'].iloc[-1]
-            sma_20 = dados_plot['SMA_20'].iloc[-1]
-            sma_200 = dados_plot['SMA_200'].iloc[-1]
             
-            # 2. BUSCA DE NOTÍCIAS
             lista_noticias, string_noticias = buscar_noticias(ativo_escolhido)
             
-            # 3. INTERFACE COM ABAS (TABS) PARA ORGANIZAÇÃO LIMPA
-            tab1, tab2 = st.tabs(["📈 Gráficos & Métricas", "📰 Feed de Notícias Globais"])
+            tab1, tab2, tab3 = st.tabs(["📈 Gráficos", "📰 Notícias Globais", "⏳ Máquina do Tempo (Backtest)"])
             
             with tab1:
-                # Métricas Rápidas
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Preço Atual", f"US$ {fechamento_atual:.2f}")
-                m2.metric("RSI (14d)", f"{rsi_atual:.2f}", "Alerta: Sobrecompra" if rsi_atual > 70 else "Alerta: Sobrevenda" if rsi_atual < 30 else "Neutro", delta_color="off")
-                m3.metric("MACD Status", "Alta (Bullish)" if macd_atual > macd_signal else "Baixa (Bearish)", delta_color="normal" if macd_atual > macd_signal else "inverse")
-                m4.metric("SMA 200 (Macro)", f"US$ {sma_200:.2f}")
-                
-                # Gráfico
-                fig = gerar_grafico_profissional(dados_plot, ativo_escolhido)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(gerar_grafico_profissional(dados_plot, ativo_escolhido), use_container_width=True)
                 
             with tab2:
-                st.subheader(f"Últimas manchetes sobre {ativo_escolhido.split('-')[0]}")
                 if len(lista_noticias) > 0:
                     for art in lista_noticias:
                         with st.container(border=True):
                             st.markdown(f"**{art['title']}**")
-                            st.caption(f"Fonte: {art['source']['name']} | Data: {art['publishedAt'][:10]}")
+                            st.caption(f"{art['source']['name']} | Data: {art['publishedAt'][:10]}")
                 else:
-                    st.info("Nenhuma notícia de alto impacto encontrada nos últimos 3 dias.")
-            
-            # 4. RELATÓRIO DUPLO DA IA (TÉCNICO + FUNDAMENTALISTA)
-            if usar_ia:
+                    st.info("Nenhuma notícia de alto impacto encontrada.")
+                    
+            with tab3:
+                posicao_total = val_margem * val_alavancagem
+                st.markdown(f"### Resultado da Estratégia MACD (Operando US$ {posicao_total:.2f})")
+                st.write(f"Você comprometeu **US$ {val_margem:.2f}** com alavancagem de **{val_alavancagem}x** (pagando {(val_taxa*100):.2f}% de taxa).")
+                
+                fig_bt, lucro, winrate = executar_backtest_macd(dados_plot, val_margem, val_alavancagem, val_taxa)
+                
+                col_bt1, col_bt2, col_bt3 = st.columns(3)
+                col_bt1.metric("Lucro Líquido Simulado", f"US$ {lucro:.2f}", delta="Gain" if lucro > 0 else "Loss", delta_color="normal" if lucro > 0 else "inverse")
+                col_bt2.metric("Retorno sobre a Margem (ROE)", f"{(lucro / val_margem) * 100:.1f}%")
+                col_bt3.metric("Taxa de Acertos (Win Rate)", f"{winrate:.1f}%")
+                
+                st.plotly_chart(fig_bt, use_container_width=True)
+
+            if usar_ia and client:
                 st.markdown("---")
-                st.markdown("### 🧠 Veredito Final (Technical & Fundamental Analysis)")
-                with st.spinner("O Head Trader está cruzando gráficos com o sentimento das notícias..."):
-                    
-                    # PROMPT SÊNIOR EVOLUÍDO
+                st.subheader("🧠 Veredito Final (Technical & Fundamental Analysis)")
+                with st.spinner("Head Trader redigindo o relatório final..."):
                     prompt = f"""
-                    Atue como o Head Trader (Gestor Principal) de um Fundo Hedge. 
-                    Você recebeu os dados técnicos dos analistas quantitativos e o resumo de notícias globais.
-                    Gere um relatório executivo cruzando as duas informações para o ativo {ativo_escolhido}.
+                    Atue como o Head Trader de um Fundo Hedge. Gere um relatório executivo para {ativo_escolhido}.
+                    Preço: US${fechamento_atual:.2f} | RSI: {rsi_atual:.2f} | MACD: {macd_atual:.2f}
+                    NOTÍCIAS: {string_noticias}
                     
-                    1. DADOS TÉCNICOS:
-                    Preço: US${fechamento_atual:.2f} | SMA 20: US${sma_20:.2f} | SMA 200: US${sma_200:.2f}
-                    RSI: {rsi_atual:.2f} | MACD Line: {macd_atual:.2f} (Signal: {macd_signal:.2f})
-                    Bollinger: Teto US${bollinger_up:.2f}, Piso US${bollinger_down:.2f}
-                    
-                    2. MANCHETES RECENTES (Sentimento Fundamentalista):
-                    {string_noticias}
-                    
-                    Sua Tarefa (Retorne em Markdown limpo):
+                    Formato (Markdown):
                     ## 🎯 Resumo Executivo
-                    (1 parágrafo juntando preço e sentimento macroeconômico)
-                    
                     ## 📊 Leitura Gráfica
-                    (Análise curta dos indicadores)
-                    
-                    ## 📰 Termômetro de Sentimento
-                    (As notícias atuais ajudam ou atrapalham a tendência do gráfico?)
-                    
-                    ## ⚖️ Veredito de Operação
-                    (COMPRA FORTE, COMPRA, MANTER, VENDA ou VENDA FORTE. E qual o Risco da operação).
+                    ## 📰 Termômetro de Sentimento (Notícias)
+                    ## ⚖️ Veredito de Operação (COMPRA FORTE/COMPRA/MANTER/VENDA/VENDA FORTE).
                     """
-                    
                     resposta = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-                    st.success("Análise de Múltiplos Fatores Concluída!")
                     st.markdown(resposta.text)
+                    
+                    with st.spinner("Gerando arquivo PDF..."):
+                        pdf_bytes = gerar_pdf_relatorio(ativo_escolhido, fechamento_atual, rsi_atual, macd_atual, resposta.text)
+                        st.download_button("📥 Baixar Relatório em PDF", data=pdf_bytes, file_name=f"Relatorio_{ativo_escolhido}.pdf", mime="application/pdf", type="primary")
 
         except Exception as e:
-            st.error(f"Erro no processamento global. Detalhe: {e}")
+            st.error(f"Erro na execução. Detalhe: {e}")

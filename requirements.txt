@@ -6,3 +6,4 @@ plotly
 fpdf2
 kaleido
 requests
+vectorbt
